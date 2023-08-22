@@ -1,0 +1,121 @@
+# Epoch hyperparams
+stabilization_epochs: 1.0
+pruning_epochs: 9.0
+finetuning_epochs: 4
+# quant_epochs: 5
+
+# Learning rate hyperparams
+init_lr: 0.0005
+final_lr: 0.00005
+
+# Pruning hyperparams
+init_sparsity: 0.05
+final_sparsity: 0.9
+
+# Stabalization Stage
+training_modifiers:
+  - !EpochRangeModifier
+    start_epoch: 0.0
+    end_epoch: eval(stabilization_epochs + pruning_epochs + finetuning_epochs)
+
+  - !SetLearningRateModifier
+    start_epoch: 0.0
+    learning_rate: eval(init_lr)
+
+# Pruning Stage
+pruning_modifiers:
+  - !LearningRateFunctionModifier
+    init_lr: eval(init_lr)
+    final_lr: eval(final_lr)
+    lr_func: cosine
+    start_epoch: eval(stabilization_epochs)
+    end_epoch: eval(stabilization_epochs + pruning_epochs)
+
+  - !GlobalMagnitudePruningModifier
+    leave_enabled: True
+    init_sparsity: eval(init_sparsity)
+    final_sparsity: eval(final_sparsity)
+    start_epoch: eval(stabilization_epochs)
+    end_epoch: eval(stabilization_epochs + pruning_epochs)
+    update_frequency: 0.5
+    params:
+        - 'encoder.conv1.weight'
+        - 'encoder.conv2.weight'
+        - 'encoder.blocks.0.attn.query.weight'
+        - 'encoder.blocks.0.attn.key.weight'
+        - 'encoder.blocks.0.attn.value.weight'
+        - 'encoder.blocks.0.attn.out.weight'
+        - 'encoder.blocks.0.mlp.0.weight'
+        - 'encoder.blocks.0.mlp.2.weight'
+        - 'encoder.blocks.1.attn.query.weight'
+        - 'encoder.blocks.1.attn.key.weight'
+        - 'encoder.blocks.1.attn.value.weight'
+        - 'encoder.blocks.1.attn.out.weight'
+        - 'encoder.blocks.1.mlp.0.weight'
+        - 'encoder.blocks.1.mlp.2.weight'
+        - 'encoder.blocks.2.attn.query.weight'
+        - 'encoder.blocks.2.attn.key.weight'
+        - 'encoder.blocks.2.attn.value.weight'
+        - 'encoder.blocks.2.attn.out.weight'
+        - 'encoder.blocks.2.mlp.0.weight'
+        - 'encoder.blocks.2.mlp.2.weight'
+        - 'encoder.blocks.3.attn.query.weight'
+        - 'encoder.blocks.3.attn.key.weight'
+        - 'encoder.blocks.3.attn.value.weight'
+        - 'encoder.blocks.3.attn.out.weight'
+        - 'encoder.blocks.3.mlp.0.weight'
+        - 'encoder.blocks.3.mlp.2.weight'
+        - 'decoder.blocks.0.attn.query.weight'
+        - 'decoder.blocks.0.attn.key.weight'
+        - 'decoder.blocks.0.attn.value.weight'
+        - 'decoder.blocks.0.attn.out.weight'
+        - 'decoder.blocks.0.cross_attn.query.weight'
+        - 'decoder.blocks.0.cross_attn.key.weight'
+        - 'decoder.blocks.0.cross_attn.value.weight'
+        - 'decoder.blocks.0.cross_attn.out.weight'
+        - 'decoder.blocks.0.mlp.0.weight'
+        - 'decoder.blocks.0.mlp.2.weight'
+        - 'decoder.blocks.1.attn.query.weight'
+        - 'decoder.blocks.1.attn.key.weight'
+        - 'decoder.blocks.1.attn.value.weight'
+        - 'decoder.blocks.1.attn.out.weight'
+        - 'decoder.blocks.1.cross_attn.query.weight'
+        - 'decoder.blocks.1.cross_attn.key.weight'
+        - 'decoder.blocks.1.cross_attn.value.weight'
+        - 'decoder.blocks.1.cross_attn.out.weight'
+        - 'decoder.blocks.1.mlp.0.weight'
+        - 'decoder.blocks.1.mlp.2.weight'
+        - 'decoder.blocks.2.attn.query.weight'
+        - 'decoder.blocks.2.attn.key.weight'
+        - 'decoder.blocks.2.attn.value.weight'
+        - 'decoder.blocks.2.attn.out.weight'
+        - 'decoder.blocks.2.cross_attn.query.weight'
+        - 'decoder.blocks.2.cross_attn.key.weight'
+        - 'decoder.blocks.2.cross_attn.value.weight'
+        - 'decoder.blocks.2.cross_attn.out.weight'
+        - 'decoder.blocks.2.mlp.0.weight'
+        - 'decoder.blocks.2.mlp.2.weight'
+        - 'decoder.blocks.3.attn.query.weight'
+        - 'decoder.blocks.3.attn.key.weight'
+        - 'decoder.blocks.3.attn.value.weight'
+        - 'decoder.blocks.3.attn.out.weight'
+        - 'decoder.blocks.3.cross_attn.query.weight'
+        - 'decoder.blocks.3.cross_attn.key.weight'
+        - 'decoder.blocks.3.cross_attn.value.weight'
+        - 'decoder.blocks.3.cross_attn.out.weight'
+        - 'decoder.blocks.3.mlp.0.weight'
+        - 'decoder.blocks.3.mlp.2.weight'
+
+# Finetuning Stage
+finetuning_modifiers:
+  - !LearningRateFunctionModifier
+    init_lr: eval(init_lr)
+    final_lr: eval(final_lr)
+    lr_func: cosine
+    start_epoch: eval(stabilization_epochs + pruning_epochs)
+    end_epoch: eval(stabilization_epochs + pruning_epochs + finetuning_epochs)
+
+# quantization_modifiers:
+#     - !QuantizationModifier
+#         start_epoch: eval(stabilization_epochs + pruning_epochs + finetuning_epochs)
+#         freeze_bn_stats_epoch: eval(stabilization_epochs + pruning_epochs + finetuning_epochs + 3)

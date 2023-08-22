@@ -1,0 +1,7 @@
+jvs
+wandb
+.history
+__pycache__
+sparse_logs
+whisper-small-cs
+jvs.zip
