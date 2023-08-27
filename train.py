@@ -10,22 +10,23 @@ from torch.nn import CrossEntropyLoss
 import evaluate
 from torch.optim import AdamW
 from utils import create_dirs_if_not_exist
+import os
 
-##Save commonvoice mapped dataset before going full so you do not have to do it every time
-
-model_size = 'medium'
-run_name = 'wholedata'
-save_dir = '/home/lu/Models/checkpoints/FinetuneWhisper/medium/'
+models_dir = os.getenv('MODELS')
+model_size = 'small'
+run_name = f'{model_size}_10e_full_data'
+save_dir = f'{models_dir}/checkpoints/FinetuneWhisper/{model_size}/'
 
 create_dirs_if_not_exist(save_dir)
 
 config = SimpleNamespace(
     seed = 42,
     lr = 0.0005,
-    batch_size = 1,
-    epochs = 50,
+    batch_size = 16,
+    epochs = 10,
     dropout = 0.2,
-    weight_decay = 0.01
+    weight_decay = 0.01,
+    acu_steps = 16
 )
 
 SAMPLE_RATE = 16000
@@ -34,7 +35,7 @@ TRAIN_RATE = 0.8
 
 AUDIO_MAX_LENGTH = 480000
 TEXT_MAX_LENGTH = 120
-run = wandb.init(project="finetune-whisper",entity="ludeksvoboda", config=config, job_type=run_name)
+run = wandb.init(project="finetune-whisper",entity="ludeksvoboda", config=config, job_type=run_name, name=run_name)
 
 set_seed(config.seed)
 
@@ -42,9 +43,9 @@ config = wandb.config
 
 common_voice = DatasetDict()
 
-common_voice["train"] = load_dataset("mozilla-foundation/common_voice_13_0", "cs", split="train+validation", use_auth_token=True)
-# common_voice["train"] = load_dataset("mozilla-foundation/common_voice_13_0", "cs", split="train", use_auth_token=True)
-common_voice["test"] = load_dataset("mozilla-foundation/common_voice_13_0", "cs", split="test", use_auth_token=True)
+# common_voice["train"] = load_dataset("mozilla-foundation/common_voice_13_0", "cs", split="train+validation", use_auth_token=True)
+common_voice["train"] = load_dataset("mozilla-foundation/common_voice_13_0", "cs", split="train+validation", token=True)
+common_voice["test"] = load_dataset("mozilla-foundation/common_voice_13_0", "cs", split="test", token=True)
 common_voice = common_voice.remove_columns(["accent", "age", "client_id", "down_votes", "gender", "locale", "path", "segment", "up_votes"])
 
 feature_extractor = WhisperFeatureExtractor.from_pretrained(f"openai/whisper-{model_size}")
@@ -67,10 +68,10 @@ def prepare_dataset(batch):
 common_voice = common_voice.map(prepare_dataset, remove_columns=common_voice.column_names["train"], num_proc=4)
 
 woptions = whisper.DecodingOptions(language="cs", without_timestamps=True)
-model = whisper.load_model("medium")
+model = whisper.load_model(model_size)
 
 dataset = JvsSpeechDataset(common_voice['train'])
-loader = torch.utils.data.DataLoader(dataset, batch_size=1, collate_fn=WhisperDataCollatorWhithPadding())
+loader = torch.utils.data.DataLoader(dataset, batch_size=config.batch_size, collate_fn=WhisperDataCollatorWhithPadding())
 
 test_dataset = JvsSpeechDataset(common_voice['test'])
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, collate_fn=WhisperDataCollatorWhithPadding())
@@ -96,11 +97,22 @@ optimizer_grouped_parameters = [
 optimizer = AdamW(optimizer_grouped_parameters, 
                           lr=config.lr)
 
+wandb.define_metric('val_loss', step_metric='val_step')
+wandb.define_metric('val_wer', step_metric='val_step')
+wandb.define_metric('val_cer', step_metric='val_step')
+wandb.define_metric('train_loss', step_metric='train_step')
+wandb.define_metric('train_wer', step_metric='train_step')
+wandb.define_metric('train_cer', step_metric='train_step')
 ###Cut subset of data before testing
 mb = master_bar(range(config.epochs))
+train_step = 0
+val_step = 0
+acu_wer = 0
+acu_cer = 0
+accumulated_loss = 0
+idx = 0
 for epoch in mb:
     for batch in progress_bar(loader, len(loader), parent=mb):
-        optimizer.zero_grad()
         input_ids = batch["input_ids"].cuda()
 
         labels = batch["labels"].long().cuda()
@@ -110,7 +122,8 @@ for epoch in mb:
             audio_features = model.encoder(input_ids)
 
         out = model.decoder(dec_input_ids, audio_features)
-        loss = loss_fn(out.view(-1, out.size(-1)), labels.view(-1))
+        loss = loss_fn(out.view(-1, out.size(-1)), labels.view(-1)) / config.acu_steps
+        accumulated_loss += loss.item()
         o_list, l_list = [], []
         for o, l in zip(out, labels):
             o = torch.argmax(o, dim=1)
@@ -118,11 +131,22 @@ for epoch in mb:
             l_list.append(tokenizer.decode(l, skip_special_tokens=True))
         cer = metrics_cer.compute(references=l_list, predictions=o_list)
         wer = metrics_wer.compute(references=l_list, predictions=o_list)
-        loss.backward()
-        optimizer.step()
-        ##Make wandb log
 
-        wandb.log({"train_loss": loss, "train_wer": wer, "train_cer": cer})
+        acu_wer += wer
+        acu_cer += cer
+
+        loss.backward()
+
+        if ((idx + 1) % config.acu_steps == 0) or (idx + 1 == len(loader)):
+            optimizer.step()
+            optimizer.zero_grad()
+            wandb.log({"train_loss": accumulated_loss,"train_wer": wer, 
+                   "train_cer": cer, "train_step": train_step})
+            acu_wer = 0
+            acu_cer = 0
+            accumulated_loss = 0
+            train_step += 1        
+        idx += 1
     torch.save({'descripiton': """Full run
                     """,
         'epoch': epoch,
@@ -130,7 +154,6 @@ for epoch in mb:
         'optimizer_state_dict': optimizer.state_dict(),
         }, f'{save_dir}{run_name}_({str(epoch)}).tar')
 
-    optimizer.zero_grad()
     for batch in progress_bar(test_loader, len(test_loader), parent=mb):
         input_ids = batch["input_ids"].cuda()
 
@@ -149,6 +172,7 @@ for epoch in mb:
                 l_list.append(tokenizer.decode(l, skip_special_tokens=True))
             val_cer = metrics_cer.compute(references=l_list, predictions=o_list)
             val_wer = metrics_wer.compute(references=l_list, predictions=o_list)
-        ##Make wandb log
 
-        wandb.log({"val_loss": val_loss, "wr": val_wer, "val_cer": val_cer})
+        wandb.log({"val_loss": val_loss, "val_wer": val_wer,
+                "val_cer": val_cer, "val_step": val_step})
+        val_step += 1
