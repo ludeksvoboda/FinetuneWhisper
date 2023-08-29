@@ -2,6 +2,9 @@ import os
 import wandb
 from typing import Dict,List
 from torch import nn
+import torch
+from transformers import PreTrainedTokenizer
+import evaluate
 
 def create_dirs_if_not_exist(path: str) -> None:
     """
@@ -56,3 +59,31 @@ def define_metrics(metric_info: Dict[str, str]) -> None:
     """
     for metric_name, step_metric in metric_info.items():
         wandb.define_metric(metric_name, step_metric=step_metric)
+
+def compute_metrics(out: List[torch.Tensor], labels: List[torch.Tensor], tokenizer: PreTrainedTokenizer) -> tuple:
+    """
+    Compute Character Error Rate (CER) and Word Error Rate (WER) metrics.
+
+    Args:
+        out (List[torch.Tensor]): List of output tensors from the model.
+        labels (List[torch.Tensor]): List of label tensors.
+        tokenizer (PreTrainedTokenizer): Tokenizer for decoding tensors.
+
+    Returns:
+        tuple: A tuple containing the computed CER and WER.
+    """
+
+    metrics_wer = evaluate.load("wer")
+    metrics_cer = evaluate.load("cer")
+
+    o_list, l_list = [], []
+
+    for o, l in zip(out, labels):
+        o = torch.argmax(o, dim=1)
+        o_list.append(tokenizer.decode(o, skip_special_tokens=True))
+        l_list.append(tokenizer.decode(l, skip_special_tokens=True))
+
+    cer = metrics_cer(references=l_list, predictions=o_list)
+    wer = metrics_wer(references=l_list, predictions=o_list)
+
+    return cer, wer

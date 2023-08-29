@@ -9,7 +9,7 @@ from dataset import JvsSpeechDataset, WhisperDataCollatorWhithPadding
 from torch.nn import CrossEntropyLoss
 import evaluate
 from torch.optim import AdamW
-from utils import create_dirs_if_not_exist, set_weight_decay, define_metrics
+from utils import create_dirs_if_not_exist, set_weight_decay, define_metrics, compute_metrics
 import os
 
 models_dir = os.getenv('MODELS')
@@ -77,8 +77,6 @@ test_dataset = JvsSpeechDataset(common_voice['test'])
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, collate_fn=WhisperDataCollatorWhithPadding(), shuffle=False)
 
 loss_fn = CrossEntropyLoss(ignore_index=-100)
-metrics_wer = evaluate.load("wer")
-metrics_cer = evaluate.load("cer")
 
 no_decay = ["bias", "LayerNorm.weight"]
 optimizer_grouped_parameters = set_weight_decay(model, config.weight_decay, no_decay)
@@ -118,13 +116,7 @@ for epoch in mb:
         out = model.decoder(dec_input_ids, audio_features)
         loss = loss_fn(out.view(-1, out.size(-1)), labels.view(-1)) / config.acu_steps
         accumulated_loss += loss.item()
-        o_list, l_list = [], []
-        for o, l in zip(out, labels):
-            o = torch.argmax(o, dim=1)
-            o_list.append(tokenizer.decode(o, skip_special_tokens=True))
-            l_list.append(tokenizer.decode(l, skip_special_tokens=True))
-        cer = metrics_cer.compute(references=l_list, predictions=o_list)
-        wer = metrics_wer.compute(references=l_list, predictions=o_list)
+        cer, wer = compute_metrics(out, labels, tokenizer)
 
         acu_wer += wer
         acu_cer += cer
@@ -141,6 +133,7 @@ for epoch in mb:
             accumulated_loss = 0
             train_step += 1        
         idx += 1
+        
     torch.save({'descripiton': """Full run
                     """,
         'epoch': epoch,
@@ -159,13 +152,7 @@ for epoch in mb:
 
             out = model.decoder(dec_input_ids, audio_features)
             val_loss = loss_fn(out.view(-1, out.size(-1)), labels.view(-1))
-            o_list, l_list = [], []
-            for o, l in zip(out, labels):
-                o = torch.argmax(o, dim=1)
-                o_list.append(tokenizer.decode(o, skip_special_tokens=True))
-                l_list.append(tokenizer.decode(l, skip_special_tokens=True))
-            val_cer = metrics_cer.compute(references=l_list, predictions=o_list)
-            val_wer = metrics_wer.compute(references=l_list, predictions=o_list)
+            val_cer, val_wer = compute_metrics(out, labels, tokenizer)
 
         wandb.log({"val_loss": val_loss, "val_wer": val_wer,
                 "val_cer": val_cer, "val_step": val_step})
