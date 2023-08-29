@@ -9,11 +9,11 @@ from dataset import JvsSpeechDataset, WhisperDataCollatorWhithPadding
 from torch.nn import CrossEntropyLoss
 import evaluate
 from torch.optim import AdamW
-from utils import create_dirs_if_not_exist
+from utils import create_dirs_if_not_exist, set_weight_decay, define_metrics
 import os
 
 models_dir = os.getenv('MODELS')
-model_size = 'small'
+model_size = 'medium'
 run_name = f'{model_size}_10e_full_data'
 save_dir = f'{models_dir}/checkpoints/FinetuneWhisper/{model_size}/'
 
@@ -22,11 +22,11 @@ create_dirs_if_not_exist(save_dir)
 config = SimpleNamespace(
     seed = 42,
     lr = 0.0005,
-    batch_size = 16,
+    batch_size = 2,
     epochs = 10,
     dropout = 0.2,
     weight_decay = 0.01,
-    acu_steps = 16
+    acu_steps = 128
 )
 
 SAMPLE_RATE = 16000
@@ -74,35 +74,29 @@ dataset = JvsSpeechDataset(common_voice['train'])
 loader = torch.utils.data.DataLoader(dataset, batch_size=config.batch_size, collate_fn=WhisperDataCollatorWhithPadding())
 
 test_dataset = JvsSpeechDataset(common_voice['test'])
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, collate_fn=WhisperDataCollatorWhithPadding())
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, collate_fn=WhisperDataCollatorWhithPadding(), shuffle=False)
 
 loss_fn = CrossEntropyLoss(ignore_index=-100)
 metrics_wer = evaluate.load("wer")
 metrics_cer = evaluate.load("cer")
 
 no_decay = ["bias", "LayerNorm.weight"]
-optimizer_grouped_parameters = [
-            {
-                "params": [p for n, p in model.named_parameters() 
-                            if not any(nd in n for nd in no_decay)],
-                "weight_decay": config.weight_decay,
-            },
-            {
-                "params": [p for n, p in model.named_parameters() 
-                            if any(nd in n for nd in no_decay)],
-                "weight_decay": 0.0,
-            },
-        ]
+optimizer_grouped_parameters = set_weight_decay(model, config.weight_decay, no_decay)
 
 optimizer = AdamW(optimizer_grouped_parameters, 
                           lr=config.lr)
 
-wandb.define_metric('val_loss', step_metric='val_step')
-wandb.define_metric('val_wer', step_metric='val_step')
-wandb.define_metric('val_cer', step_metric='val_step')
-wandb.define_metric('train_loss', step_metric='train_step')
-wandb.define_metric('train_wer', step_metric='train_step')
-wandb.define_metric('train_cer', step_metric='train_step')
+metric_information = {
+    'val_loss': 'val_step',
+    'val_wer': 'val_step',
+    'val_cer': 'val_step',
+    'train_loss': 'train_step',
+    'train_wer': 'train_step',
+    'train_cer': 'train_step'
+}
+
+define_metrics(metric_information)
+
 ###Cut subset of data before testing
 mb = master_bar(range(config.epochs))
 train_step = 0
