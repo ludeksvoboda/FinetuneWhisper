@@ -1,10 +1,10 @@
 import os
 import wandb
-from typing import Dict,List
+from typing import Dict, List
 from torch import nn
 import torch
 from transformers import PreTrainedTokenizer
-import evaluate
+
 
 def create_dirs_if_not_exist(path: str) -> None:
     """
@@ -23,7 +23,11 @@ def create_dirs_if_not_exist(path: str) -> None:
         print("The new directory is created!")
 
 
-def set_weight_decay(model: nn.Module, weight_decay: float = 0.01, no_decay: List[str] = ["bias", "LayerNorm.weight"]) -> List[dict]:
+def set_weight_decay(
+    model: nn.Module,
+    weight_decay: float = 0.01,
+    no_decay: List[str] = ["bias", "LayerNorm.weight"],
+) -> List[dict]:
     """
     Set weight decay for different parameter groups in the optimizer.
 
@@ -37,15 +41,24 @@ def set_weight_decay(model: nn.Module, weight_decay: float = 0.01, no_decay: Lis
     """
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if not any(nd in n for nd in no_decay)
+            ],
             "weight_decay": weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if any(nd in n for nd in no_decay)
+            ],
             "weight_decay": 0.0,
         },
     ]
     return optimizer_grouped_parameters
+
 
 def define_metrics(metric_info: Dict[str, str]) -> None:
     """
@@ -53,14 +66,19 @@ def define_metrics(metric_info: Dict[str, str]) -> None:
 
     Args:
         metric_info (Dict[str, str]): A dictionary where keys are metric names and values are step metrics.
-        
+
     Returns:
         None
     """
     for metric_name, step_metric in metric_info.items():
         wandb.define_metric(metric_name, step_metric=step_metric)
 
-def compute_metrics(out: List[torch.Tensor], labels: List[torch.Tensor], tokenizer: PreTrainedTokenizer) -> tuple:
+
+## Good exercise might be create a class, where in instantiation you load the metrics, and then you have a method that computes the metrics
+### Annotations are here kinda tricky for the metrics_cer and metrics_wer as what kinda of object they are
+def compute_metrics(
+    out: List[torch.Tensor], labels: List[torch.Tensor], tokenizer: PreTrainedTokenizer, metrics_cer, metrics_wer
+) -> tuple:
     """
     Compute Character Error Rate (CER) and Word Error Rate (WER) metrics.
 
@@ -73,9 +91,6 @@ def compute_metrics(out: List[torch.Tensor], labels: List[torch.Tensor], tokeniz
         tuple: A tuple containing the computed CER and WER.
     """
 
-    metrics_wer = evaluate.load("wer")
-    metrics_cer = evaluate.load("cer")
-
     o_list, l_list = [], []
 
     for o, l in zip(out, labels):
@@ -83,7 +98,7 @@ def compute_metrics(out: List[torch.Tensor], labels: List[torch.Tensor], tokeniz
         o_list.append(tokenizer.decode(o, skip_special_tokens=True))
         l_list.append(tokenizer.decode(l, skip_special_tokens=True))
 
-    cer = metrics_cer(references=l_list, predictions=o_list)
-    wer = metrics_wer(references=l_list, predictions=o_list)
+    cer = metrics_cer.compute(references=l_list, predictions=o_list)
+    wer = metrics_wer.compute(references=l_list, predictions=o_list)
 
     return cer, wer

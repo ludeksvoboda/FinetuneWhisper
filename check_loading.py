@@ -9,8 +9,6 @@ from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProce
 from dataset import JvsSpeechDataset, WhisperDataCollatorWhithPadding
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
-from os.path import isfile
-import evaluate
 from utils import (
     create_dirs_if_not_exist,
     set_weight_decay,
@@ -18,15 +16,13 @@ from utils import (
     compute_metrics,
 )
 import os
+import evaluate
 
 models_dir = os.getenv("MODELS")
 model_size = "small"
-run_name = f"{model_size}_sparsify_full_data"
+run_name = f"{model_size}_check_vanilla"
 save_dir = f"{models_dir}/checkpoints/FinetuneWhisper/{model_size}/"
 model_to_load = "small_10e_full_data_(9).tar"
-
-if not isfile(f"{save_dir}{model_to_load}"):
-    raise ValueError("Model to load does not exist")
 
 create_dirs_if_not_exist(save_dir)
 
@@ -56,7 +52,7 @@ config = wandb.config
 common_voice = DatasetDict()
 
 common_voice["train"] = load_dataset(
-    "mozilla-foundation/common_voice_13_0", "cs", split="train+validation", token=True
+    "mozilla-foundation/common_voice_13_0", "cs", split="train[:1%]", token=True
 )
 common_voice["test"] = load_dataset(
     "mozilla-foundation/common_voice_13_0", "cs", split="test", token=True
@@ -103,7 +99,6 @@ def prepare_dataset(batch):
     batch["labels"] = tokenizer(batch["sentence"]).input_ids
     return batch
 
-
 common_voice = common_voice.map(
     prepare_dataset, remove_columns=common_voice.column_names["train"], num_proc=4
 )
@@ -111,13 +106,13 @@ common_voice = common_voice.map(
 woptions = whisper.DecodingOptions(language="cs", without_timestamps=True)
 model = whisper.load_model(model_size)
 
-checkpoint = torch.load(f"{save_dir}{model_to_load}")
-model.load_state_dict(checkpoint["model_state_dict"])
+# checkpoint = torch.load(f"{save_dir}{model_to_load}")
+# model.load_state_dict(checkpoint["model_state_dict"])
 
-dataset = JvsSpeechDataset(common_voice["train"])
-loader = torch.utils.data.DataLoader(
-    dataset, batch_size=config.batch_size, collate_fn=WhisperDataCollatorWhithPadding()
-)
+# dataset = JvsSpeechDataset(common_voice["train"])
+# loader = torch.utils.data.DataLoader(
+#     dataset, batch_size=config.batch_size, collate_fn=WhisperDataCollatorWhithPadding()
+# )
 
 test_dataset = JvsSpeechDataset(common_voice["test"])
 test_loader = torch.utils.data.DataLoader(
@@ -129,10 +124,10 @@ test_loader = torch.utils.data.DataLoader(
 
 loss_fn = CrossEntropyLoss(ignore_index=-100)
 
-no_decay = ["bias", "LayerNorm.weight"]
-optimizer_grouped_parameters = set_weight_decay(model, config.weight_decay, no_decay)
+# no_decay = ["bias", "LayerNorm.weight"]
+# optimizer_grouped_parameters = set_weight_decay(model, config.weight_decay, no_decay)
 
-optimizer = AdamW(optimizer_grouped_parameters, lr=config.lr)
+# optimizer = AdamW(optimizer_grouped_parameters, lr=config.lr)
 
 metric_information = {
     "val_loss": "val_step",
@@ -148,9 +143,6 @@ define_metrics(metric_information)
 metrics_wer = evaluate.load("wer")
 metrics_cer = evaluate.load("cer")
 
-manager = ScheduledModifierManager.from_yaml("sparsify_recipe.yaml")
-optimizer = manager.modify(model, optimizer, steps_per_epoch=len(loader))
-
 ###Cut subset of data before testing
 mb = master_bar(range(config.epochs))
 train_step = 0
@@ -160,42 +152,6 @@ acu_cer = 0
 accumulated_loss = 0
 idx = 0
 for epoch in mb:
-    for batch in progress_bar(loader, len(loader), parent=mb):
-        input_ids = batch["input_ids"].cuda()
-
-        labels = batch["labels"].long().cuda()
-        dec_input_ids = batch["dec_input_ids"].long().cuda()
-
-        with torch.no_grad():
-            audio_features = model.encoder(input_ids)
-
-        out = model.decoder(dec_input_ids, audio_features)
-        loss = loss_fn(out.view(-1, out.size(-1)), labels.view(-1)) / config.acu_steps
-        accumulated_loss += loss.item()
-        cer, wer = compute_metrics(out, labels, tokenizer, metrics_cer, metrics_wer)
-
-        acu_wer += wer
-        acu_cer += cer
-
-        loss.backward()
-
-        if ((idx + 1) % config.acu_steps == 0) or (idx + 1 == len(loader)):
-            optimizer.step()
-            optimizer.zero_grad()
-            wandb.log(
-                {
-                    "train_loss": accumulated_loss,
-                    "train_wer": wer,
-                    "train_cer": cer,
-                    "train_step": train_step,
-                }
-            )
-            acu_wer = 0
-            acu_cer = 0
-            accumulated_loss = 0
-            train_step += 1
-        idx += 1
-
     for batch in progress_bar(test_loader, len(test_loader), parent=mb):
         input_ids = batch["input_ids"].cuda()
 
@@ -207,6 +163,7 @@ for epoch in mb:
 
             out = model.decoder(dec_input_ids, audio_features)
             val_loss = loss_fn(out.view(-1, out.size(-1)), labels.view(-1))
+
             val_cer, val_wer = compute_metrics(out, labels, tokenizer, metrics_cer, metrics_wer)
 
         wandb.log(
@@ -218,16 +175,3 @@ for epoch in mb:
             }
         )
         val_step += 1
-
-manager.finalize(model)
-
-torch.save(
-    {
-        "descripiton": """Sparsification on full data
-                        """,
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-    },
-    f"{save_dir}{run_name}_({str(epoch)}).tar",
-)
